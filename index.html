@@ -28,7 +28,6 @@
       <div class="card" style="margin-top:12px">
         <div class="card-title">Continuar sesión guardada</div>
         <small style="color:var(--muted); display:block; margin-bottom:8px">Carga un archivo <code>.studybattle.json</code> para restaurar jugadores, historial y documento.</small>
-        <input type="text" id="import-host-name" placeholder="Tu nombre (host)" class="gap-bot" style="margin-bottom:10px"/>
         <input type="file" id="importFileInput" accept=".json" style="color:var(--muted); font-size:12px"/>
         <button class="btn btn-secondary gap-top" onclick="importSession()" style="margin-top:10px">Restaurar sesión →</button>
         <small id="import-status" style="display:block; margin-top:6px"></small>
@@ -210,7 +209,6 @@ async function createRoom() {
     body: JSON.stringify({ room, name })
   });
   document.getElementById("display-code").textContent = room;
-  // Mostrar sección de upload, ocultar banner
   document.getElementById("upload-section").style.display = "block";
   document.getElementById("doc-loaded-banner").style.display = "none";
   show("v-waiting");
@@ -258,7 +256,6 @@ async function uploadFile() {
   populateSectionSelect();
   if (data.warning) statusEl.innerHTML = `⚠ ${data.warning}`;
   else statusEl.textContent = "✓ " + sections.length + " secciones";
-  // Ocultar upload y mostrar banner de continuar
   document.getElementById("upload-section").style.display = "none";
   document.getElementById("doc-loaded-banner").style.display = "block";
   notif("Documento cargado. Puedes continuar cuando quieras.", 4000);
@@ -276,7 +273,6 @@ function populateSectionSelect() {
 }
 
 function goToSectionSelect() {
-  // Verificar que haya secciones cargadas
   if (!sections || sections.length === 0) {
     notif("Primero carga un documento con secciones.", 3000);
     return;
@@ -558,7 +554,7 @@ function updateConnectedList() {
   wrap.innerHTML = playerNames.map(p => `<span class="player-bubble done">${p}</span>`).join("");
 }
 
-// ---------- EXPORT / IMPORT (MODIFICADO) ----------
+// ---------- EXPORT / IMPORT ----------
 async function exportSession() {
   const btn = event.target;
   btn.disabled = true;
@@ -586,7 +582,7 @@ async function exportSession() {
 
 async function importSession() {
   const name = document.getElementById("host-name").value.trim();
-  if (!name) { notif("Escribe tu nombre primero"); return; }
+  if (!name) { notif("Escribe tu nombre en 'Crear sala' primero"); return; }
   const file = document.getElementById("importFileInput").files[0];
   if (!file) { notif("Selecciona un archivo .studybattle.json"); return; }
   const statusEl = document.getElementById("import-status");
@@ -605,25 +601,22 @@ async function importSession() {
     isHost = true;
     sections = data.sections;
     populateSectionSelect();
-    // En lugar de ir a v-section, mostramos la sala de espera
     document.getElementById("display-code").textContent = room;
-    document.getElementById("upload-section").style.display = "none"; // ya hay secciones
+    document.getElementById("upload-section").style.display = "none";
     document.getElementById("doc-loaded-banner").style.display = "block";
     statusEl.textContent = `✓ Restaurado: ${data.restored_questions} preguntas, ${Object.keys(data.players).length} jugadores`;
     notif(`Sesión restaurada · Sala: ${room}`);
     startPoll();
-    show("v-waiting");  // <--- CAMBIO: mostrar waiting room
-    // No llamamos a renderHistory todavía, eso se hará cuando el host seleccione sección
-  } catch(e) { statusEl.textContent = "✗ Archivo inválido"; }
+    show("v-waiting");
+  } catch(e) { 
+    statusEl.textContent = "✗ Archivo inválido"; 
+    console.error(e);
+  }
 }
 
-// Dentro de startQuestion, asegurar que el botón de forzar esté oculto inicialmente
+// Inicialización de elementos visuales
 document.getElementById("btn-force-evaluate").style.display = "none";
 
-// En el polling o en submitMyAnswer, cuando se muestre el card de espera, si es host mostrar el botón de forzar
-if (isHost) {
-  document.getElementById("btn-force-evaluate").style.display = "inline-block";
-}
 async function forceEvaluate() {
   const btn = document.getElementById("btn-force-evaluate");
   btn.disabled = true;
