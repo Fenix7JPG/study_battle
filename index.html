@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Study Battle</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+<div class="shell">
+  <div class="logo">Study<span>Battle</span></div>
+  <div class="tagline">aprende · compite · domina</div>
+
+  <!-- LOBBY -->
+  <div class="view active" id="v-lobby">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('tab-host')">Crear sala</button>
+      <button class="tab" onclick="switchTab('tab-join')">Unirse</button>
+    </div>
+    <div id="tab-host">
+      <div class="card">
+        <div class="card-title">Nueva partida</div>
+        <input type="text" id="host-name" placeholder="Tu nombre" class="gap-bot"/>
+        <div class="split gap-top">
+          <button class="btn btn-primary" onclick="createRoom()">Crear sala</button>
+        </div>
+      </div>
+      <div class="card" style="margin-top:12px">
+        <div class="card-title">Continuar sesión guardada</div>
+        <small style="color:var(--muted); display:block; margin-bottom:8px">Carga un archivo <code>.studybattle.json</code> para restaurar jugadores, historial y documento.</small>
+        <input type="text" id="import-host-name" placeholder="Tu nombre (host)" class="gap-bot" style="margin-bottom:10px"/>
+        <input type="file" id="importFileInput" accept=".json" style="color:var(--muted); font-size:12px"/>
+        <button class="btn btn-secondary gap-top" onclick="importSession()" style="margin-top:10px">Restaurar sesión →</button>
+        <small id="import-status" style="display:block; margin-top:6px"></small>
+      </div>
+    </div>
+    <div id="tab-join" style="display:none">
+      <div class="card">
+        <div class="card-title">Unirse a sala existente</div>
+        <input type="text" id="join-name" placeholder="Tu nombre" class="gap-bot" style="margin-bottom:10px"/>
+        <input type="text" id="join-code" placeholder="Código de sala (ej: A3FX)" style="text-transform:uppercase; letter-spacing:4px; font-size:16px"/>
+        <div class="split gap-top">
+          <button class="btn btn-primary" onclick="joinRoom()">Entrar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- WAITING ROOM (host) -->
+  <div class="view" id="v-waiting">
+    <div class="card">
+      <div class="card-title">Código de sala — comparte este código</div>
+      <div class="room-code" id="display-code">----</div>
+      <small style="text-align:center; display:block">Los demás jugadores ingresan este código en "Unirse"</small>
+    </div>
+    <div class="card">
+      <div class="card-title">Jugadores conectados</div>
+      <div id="connected-list" class="answered-row"></div>
+
+      <!-- Upload section (visible solo cuando no hay secciones cargadas aún) -->
+      <div id="upload-section" class="gap-top">
+        <input type="file" id="fileInput" accept=".json" style="color:var(--muted); font-size:12px"/>
+        <small>Adjunta el documento <code>.json</code> con las secciones del material</small>
+        <button class="btn btn-primary gap-top" id="btn-upload" onclick="uploadFile()" style="margin-top:12px">Cargar documento</button>
+        <small id="upload-status"></small>
+      </div>
+
+      <!-- Banner cuando ya hay secciones cargadas (por importación o upload previo) -->
+      <div id="doc-loaded-banner" style="display:none; margin-top:12px; padding:10px; background:var(--surface2,#1e293b); border-radius:8px; border:1px solid var(--success)">
+        <span style="color:var(--success); font-size:13px">✓ Secciones cargadas</span><br>
+        <small style="color:var(--muted)">Puedes comenzar la partida cuando todos estén listos.</small>
+        <button class="btn btn-primary gap-top" onclick="goToSectionSelect()" style="margin-top:8px">Continuar →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- WAITING (player) -->
+  <div class="view" id="v-joined">
+    <div class="card">
+      <div class="card-title">Sala</div>
+      <div class="room-code" id="display-code-2">----</div>
+      <div class="waiting-dots" style="text-align:center; margin:20px 0"><span></span><span></span><span></span></div>
+      <p style="text-align:center; font-size:12px; color:var(--muted)">Esperando que el host inicie la partida…</p>
+    </div>
+  </div>
+
+  <!-- SELECT SECTION (host) -->
+  <div class="view" id="v-section">
+    <div id="review-banner-wrap"></div>
+    <div class="card">
+      <div class="card-title">Seleccionar sección</div>
+      <select id="section-select"></select>
+      <div class="split gap-top">
+        <button class="btn btn-primary" onclick="loadSection()">Leer esta sección</button>
+        <button class="btn btn-warn" onclick="loadWeakest()" title="Sección con más fallos">⚠ Sección débil</button>
+      </div>
+      <small id="weakest-hint" style="margin-top:8px"></small>
+    </div>
+    <div class="card">
+      <div class="card-title">Historial de preguntas</div>
+      <div id="history-list" style="max-height:300px; overflow-y:auto;"></div>
+    </div>
+  </div>
+
+  <!-- READING -->
+  <div class="view" id="v-read">
+    <div class="card">
+      <div class="card-title">Fragmento — léanlo bien</div>
+      <div class="section-body" id="section-content"></div>
+    </div>
+    <div id="timer">2:00</div>
+    <div id="read-host-controls">
+      <button class="btn btn-secondary" onclick="startQuestion()">Ya leímos →</button>
+    </div>
+    <div id="read-player-msg" style="display:none; font-size:12px; color:var(--muted)">El host avanzará cuando estén listos…</div>
+  </div>
+
+  <!-- QUESTION -->
+  <div class="view" id="v-question">
+    <div class="card">
+      <div class="card-title">Pregunta</div>
+      <p id="question-text" style="font-size:14px; line-height:1.7; color:var(--accent)">Cargando…</p>
+    </div>
+    <div class="card" id="answer-form">
+      <div class="card-title">Tu respuesta — <span id="answer-player-label"></span></div>
+      <textarea id="my-answer" placeholder="Escribe tu respuesta aquí…"></textarea>
+      <button class="btn btn-primary gap-top" id="btn-submit" onclick="submitMyAnswer()" style="margin-top:10px">Enviar →</button>
+      <small id="my-status"></small>
+    </div>
+    <div class="card" id="waiting-others-card" style="display:none">
+    <div class="card-title">Esperando respuestas</div>
+    <div id="answered-bubbles" class="answered-row"></div>
+    <div class="split">
+        <button class="btn btn-primary" id="btn-evaluate" onclick="showResults()">Ver resultados →</button>
+        <button class="btn btn-warn" id="btn-force-evaluate" onclick="forceEvaluate()" style="display:none;">⚡ Forzar evaluación</button>
+    </div>
+    </div>
+  </div>
+
+  <!-- RESULTS -->
+  <div class="view" id="v-results">
+    <div class="card">
+      <div class="card-title">Resultados</div>
+      <div id="results-list"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Marcador</div>
+      <div id="scoreboard"></div>
+    </div>
+    <div id="results-host-controls" style="display:none">
+      <div id="pending-notice" style="display:none" class="review-banner">⚠ Hay secciones con errores que deben repasarse.</div>
+      <div class="split">
+        <button class="btn btn-primary" onclick="goNextSection()">Siguiente sección →</button>
+        <button class="btn btn-secondary btn-sm" onclick="showHistory()">Ver historial</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportSession()">⬇ Guardar sesión</button>
+      </div>
+    </div>
+    <p id="results-player-msg" style="display:none; font-size:12px; color:var(--muted); margin-top:10px">Esperando que el host seleccione la siguiente sección…</p>
+  </div>
+</div>
+
+<div id="notif"></div>
+
+<script>
+// ---------- STATE ----------
+let room = "";
+let myName = "";
+let isHost = false;
+let sections = [];
+let pollInterval = null;
+let timerInterval = null;
+let myAnswered = false;
+let playerNames = [];
+let lastPhase = "";
+
+// ---------- VIEW ROUTER ----------
+function show(id) {
+  document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+  document.getElementById(id).classList.add("active");
+}
+
+function switchTab(id) {
+  document.getElementById("tab-host").style.display = id === "tab-host" ? "block" : "none";
+  document.getElementById("tab-join").style.display = id === "tab-join" ? "block" : "none";
+  document.querySelectorAll(".tab").forEach((t,i) => t.classList.toggle("active", (i===0 && id==="tab-host") || (i===1 && id==="tab-join")));
+}
+
+// ---------- NOTIFICATION ----------
+let notifTimeout;
+function notif(msg, duration = 3000) {
+  const el = document.getElementById("notif");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(notifTimeout);
+  notifTimeout = setTimeout(() => el.classList.remove("show"), duration);
+}
+
+// ---------- LOBBY ----------
+async function createRoom() {
+  const name = document.getElementById("host-name").value.trim();
+  if (!name) { notif("Escribe tu nombre"); return; }
+  const res = await fetch("/create_room", { method: "POST" });
+  const data = await res.json();
+  room = data.room;
+  myName = name;
+  isHost = true;
+  await fetch("/join_room", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ room, name })
+  });
+  document.getElementById("display-code").textContent = room;
+  // Mostrar sección de upload, ocultar banner
+  document.getElementById("upload-section").style.display = "block";
+  document.getElementById("doc-loaded-banner").style.display = "none";
+  show("v-waiting");
+  startPoll();
+  notif("Sala creada: " + room, 5000);
+}
+
+async function joinRoom() {
+  const name = document.getElementById("join-name").value.trim();
+  const code = document.getElementById("join-code").value.trim().toUpperCase();
+  if (!name || !code) { notif("Completa tu nombre y el código"); return; }
+  const res = await fetch("/join_room", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ room: code, name })
+  });
+  const data = await res.json();
+  if (data.error) { notif(data.error); return; }
+  room = code;
+  myName = name;
+  isHost = false;
+  document.getElementById("display-code-2").textContent = room;
+  show("v-joined");
+  startPoll();
+  notif("Te uniste a " + room);
+}
+
+// ---------- UPLOAD (HOST) ----------
+function showUploadSection() {
+  document.getElementById("upload-section").style.display = "block";
+  document.getElementById("doc-loaded-banner").style.display = "none";
+}
+
+async function uploadFile() {
+  const file = document.getElementById("fileInput").files[0];
+  const statusEl = document.getElementById("upload-status");
+  if (!file) { notif("Selecciona un archivo .json"); return; }
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("room", room);
+  const res = await fetch("/upload", { method: "POST", body: fd });
+  const data = await res.json();
+  if (data.error) { statusEl.textContent = "✗ " + data.error; return; }
+  sections = data.sections;
+  populateSectionSelect();
+  if (data.warning) statusEl.innerHTML = `⚠ ${data.warning}`;
+  else statusEl.textContent = "✓ " + sections.length + " secciones";
+  // Ocultar upload y mostrar banner de continuar
+  document.getElementById("upload-section").style.display = "none";
+  document.getElementById("doc-loaded-banner").style.display = "block";
+  notif("Documento cargado. Puedes continuar cuando quieras.", 4000);
+}
+
+function populateSectionSelect() {
+  const sel = document.getElementById("section-select");
+  sel.innerHTML = "";
+  sections.forEach((s, i) => {
+    const opt = document.createElement("option");
+    opt.value = i;
+    opt.textContent = s.number + "  " + s.title;
+    sel.appendChild(opt);
+  });
+}
+
+function goToSectionSelect() {
+  // Verificar que haya secciones cargadas
+  if (!sections || sections.length === 0) {
+    notif("Primero carga un documento con secciones.", 3000);
+    return;
+  }
+  show("v-section");
+  renderHistory();
+}
+
+// ---------- SECTION (HOST) ----------
+async function loadWeakest() {
+  const res = await fetch("/weakest", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ room })
+  });
+  const data = await res.json();
+  const idx = data.index;
+  document.getElementById("section-select").value = idx;
+  const hint = sections[idx];
+  document.getElementById("weakest-hint").textContent = "→ Sección con más errores: " + (hint ? hint.number + " " + hint.title : "");
+  notif("Seleccionada la sección más débil");
+}
+
+async function loadSection() {
+  const index = parseInt(document.getElementById("section-select").value);
+  const res = await fetch("/section", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ index, room })
+  });
+  const data = await res.json();
+  if (data.error) { notif(data.error); return; }
+  document.getElementById("section-content").textContent = data.number + " " + data.title + "\n\n" + data.content;
+  show("v-read");
+  document.getElementById("read-host-controls").style.display = "block";
+  document.getElementById("read-player-msg").style.display = "none";
+  startTimer(120);
+}
+
+// ---------- TIMER ----------
+function startTimer(seconds) {
+  clearInterval(timerInterval);
+  const el = document.getElementById("timer");
+  let rem = seconds;
+  function tick() {
+    const m = Math.floor(rem / 60), s = rem % 60;
+    el.textContent = m + ":" + String(s).padStart(2,"0");
+    el.classList.toggle("urgent", rem <= 10);
+    if (rem <= 0) clearInterval(timerInterval);
+    rem--;
+  }
+  tick();
+  timerInterval = setInterval(tick, 1000);
+}
+
+// ---------- QUESTION ----------
+async function startQuestion() {
+  clearInterval(timerInterval);
+  myAnswered = false;
+  document.getElementById("my-answer").value = "";
+  document.getElementById("my-answer").disabled = false;
+  document.getElementById("btn-submit").disabled = false;
+  document.getElementById("my-status").textContent = "";
+  document.getElementById("question-text").textContent = "Generando pregunta…";
+  document.getElementById("waiting-others-card").style.display = "none";
+  const btnEval = document.getElementById("btn-evaluate");
+  btnEval.style.display = "none";
+  btnEval.disabled = false;
+  btnEval.textContent = "Ver resultados →";
+  document.getElementById("answer-player-label").textContent = myName;
+  show("v-question");
+  const res = await fetch("/question", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ room })
+  });
+  const data = await res.json();
+  if (data.error) {
+    document.getElementById("question-text").textContent = "";
+    notif("⚠ " + data.error);
+    setTimeout(() => show("v-section"), 2500);
+    return;
+  }
+  document.getElementById("question-text").textContent = data.question;
+  document.getElementById("btn-force-evaluate").style.display = "none";
+}
+
+// ---------- ANSWER ----------
+async function submitMyAnswer() {
+  const answer = document.getElementById("my-answer").value.trim();
+  if (!answer) { notif("Escribe una respuesta"); return; }
+  document.getElementById("btn-submit").disabled = true;
+  document.getElementById("btn-submit").textContent = "Enviando…";
+  const res = await fetch("/answer", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ room, player: myName, answer })
+  });
+  const data = await res.json();
+  if (data.error) { notif(data.error); document.getElementById("btn-submit").disabled = false; document.getElementById("btn-submit").textContent = "Enviar →"; return; }
+  document.getElementById("my-answer").disabled = true;
+  document.getElementById("btn-submit").textContent = "Enviado ✓";
+  document.getElementById("my-status").textContent = "✓ Respuesta guardada";
+  document.getElementById("my-status").style.color = "var(--success)";
+  myAnswered = true;
+  document.getElementById("waiting-others-card").style.display = "block";
+  if (data.player_names) playerNames = data.player_names;
+  updateAnsweredBubbles(data.players_answered);
+  if (isHost) {
+    document.getElementById("btn-force-evaluate").style.display = "inline-block";
+  }
+  if (isHost && data.all_answered) {
+    if (playerNames.length === 1) {
+      setTimeout(() => showResults(), 500);
+    } else {
+      document.getElementById("btn-evaluate").style.display = "block";
+    }
+  }
+}
+
+function updateAnsweredBubbles(answered) {
+  const wrap = document.getElementById("answered-bubbles");
+  if (!wrap) return;
+  wrap.innerHTML = playerNames.map(p => `<span class="player-bubble ${answered.includes(p) ? 'done' : ''}">${p}</span>`).join("");
+}
+
+// ---------- EVALUATE ----------
+async function showResults() {
+  const btn = document.getElementById("btn-evaluate");
+  btn.disabled = true;
+  btn.textContent = "Evaluando…";
+  const res = await fetch("/evaluate", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ room })
+  });
+  const data = await res.json();
+  if (data.error) { notif(data.error); btn.disabled = false; btn.textContent = "Ver resultados →"; return; }
+  renderResults(data);
+  renderHistory();
+}
+
+function renderResults(data) {
+  const list = document.getElementById("results-list");
+  list.innerHTML = "";
+  for (const [player, r] of Object.entries(data.results)) {
+    const scoreColor = r.score >= 60 ? "var(--success)" : "var(--danger)";
+    list.innerHTML += `
+      <div class="result-player">
+        <div class="split">
+          <span class="chip chip-accent">${player}</span>
+          <span style="font-size:20px; font-weight:800; color:${scoreColor}">${r.score}%</span>
+          <span style="font-size:12px; color:var(--muted)">+${r.points_earned} pts</span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" style="width:${r.score}%; background:${scoreColor}"></div></div>
+        <div class="result-answer">Respuesta: ${r.answer}</div>
+        <div class="result-feedback">${r.feedback}</div>
+      </div>`;
+  }
+  const sb = document.getElementById("scoreboard");
+  sb.innerHTML = Object.entries(data.scoreboard).sort((a,b)=>b[1]-a[1]).map(([p, pts]) => `<div class="score-row"><span>${p}</span><span class="score-pts">${pts} pts</span></div>`).join("");
+  if (isHost) {
+    document.getElementById("results-host-controls").style.display = "block";
+    document.getElementById("results-player-msg").style.display = "none";
+    if (data.has_pending_review) document.getElementById("pending-notice").style.display = "block";
+    else document.getElementById("pending-notice").style.display = "none";
+  } else {
+    document.getElementById("results-host-controls").style.display = "none";
+    document.getElementById("results-player-msg").style.display = "block";
+  }
+  show("v-results");
+}
+
+function goNextSection() {
+  show("v-section");
+  renderHistory();
+}
+
+// ---------- HISTORY ----------
+async function renderHistory() {
+  const res = await fetch("/history", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ room })
+  });
+  const data = await res.json();
+  const list = document.getElementById("history-list");
+  if (!data.history || data.history.length === 0) {
+    list.innerHTML = '<p style="font-size:12px; color:var(--muted)">Sin historial aún.</p>';
+    return;
+  }
+  list.innerHTML = [...data.history].reverse().map(h => {
+    const cls = h.needs_review ? "hist-fail" : "hist-pass";
+    const badge = h.needs_review ? `<span style="color:var(--danger);">⚠ Necesita repaso</span>` : `<span style="color:var(--success);">✓ Comprendido</span>`;
+    return `<div class="hist-item ${cls}"><div style="font-size:10px; color:var(--muted);">${h.section_number} ${h.section_title}</div><div class="hist-q">${h.question}</div><div>${badge}</div></div>`;
+  }).join("");
+}
+
+function showHistory() {
+  show("v-section");
+  renderHistory();
+}
+
+// ---------- POLLING ----------
+function startPoll() {
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(doPoll, 2000);
+}
+
+async function doPoll() {
+  if (!room) return;
+  try {
+    const res = await fetch("/poll", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ room })
+    });
+    const data = await res.json();
+    if (data.error) return;
+    playerNames = data.player_names;
+    updateConnectedList();
+    if (!isHost) {
+      if (data.phase === "reading" && lastPhase !== "reading") {
+        await fetchCurrentSection();
+        show("v-read");
+        document.getElementById("read-host-controls").style.display = "none";
+        document.getElementById("read-player-msg").style.display = "block";
+        startTimer(120);
+      }
+      if (data.phase === "answering" && lastPhase !== "answering") {
+        myAnswered = false;
+        document.getElementById("my-answer").value = "";
+        document.getElementById("my-answer").disabled = false;
+        document.getElementById("btn-submit").disabled = false;
+        document.getElementById("my-status").textContent = "";
+        document.getElementById("answer-player-label").textContent = myName;
+        document.getElementById("waiting-others-card").style.display = "none";
+        document.getElementById("question-text").textContent = data.question || "Cargando…";
+        show("v-question");
+        clearInterval(timerInterval);
+      }
+      if (data.phase === "results" && lastPhase !== "results") {
+        await fetchAndShowResults();
+      }
+    }
+    if (data.phase === "answering") {
+      updateAnsweredBubbles(data.players_answered);
+      if (isHost && data.all_answered && myAnswered) {
+        document.getElementById("btn-evaluate").style.display = "block";
+      }
+    }
+    lastPhase = data.phase;
+  } catch(e) {}
+}
+
+async function fetchCurrentSection() {
+  try {
+    const res = await fetch("/current_section", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ room })
+    });
+    const data = await res.json();
+    if (data.content) document.getElementById("section-content").textContent = data.number + " " + data.title + "\n\n" + data.content;
+  } catch(e) {}
+}
+
+async function fetchAndShowResults() {
+  try {
+    const res = await fetch("/last_results", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ room })
+    });
+    const data = await res.json();
+    if (data.results) renderResults(data);
+  } catch(e) {}
+}
+
+function updateConnectedList() {
+  const wrap = document.getElementById("connected-list");
+  if (!wrap) return;
+  wrap.innerHTML = playerNames.map(p => `<span class="player-bubble done">${p}</span>`).join("");
+}
+
+// ---------- EXPORT / IMPORT (MODIFICADO) ----------
+async function exportSession() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = "Exportando…";
+  try {
+    const res = await fetch("/export_session", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ room })
+    });
+    const data = await res.json();
+    if (data.error) { notif(data.error); return; }
+    const date = new Date().toISOString().slice(0,10);
+    const filename = `sesion_${room}_${date}.studybattle.json`;
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    notif("✓ Sesión guardada", 3000);
+  } catch(e) { notif("Error al exportar"); }
+  finally { btn.disabled = false; btn.textContent = "⬇ Guardar sesión"; }
+}
+
+async function importSession() {
+  const name = document.getElementById("host-name").value.trim();
+  if (!name) { notif("Escribe tu nombre primero"); return; }
+  const file = document.getElementById("importFileInput").files[0];
+  if (!file) { notif("Selecciona un archivo .studybattle.json"); return; }
+  const statusEl = document.getElementById("import-status");
+  statusEl.textContent = "Restaurando…";
+  try {
+    const text = await file.text();
+    const session = JSON.parse(text);
+    const res = await fetch("/import_session", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ session, host_name: name })
+    });
+    const data = await res.json();
+    if (data.error) { statusEl.textContent = "✗ " + data.error; return; }
+    room = data.room;
+    myName = name;
+    isHost = true;
+    sections = data.sections;
+    populateSectionSelect();
+    // En lugar de ir a v-section, mostramos la sala de espera
+    document.getElementById("display-code").textContent = room;
+    document.getElementById("upload-section").style.display = "none"; // ya hay secciones
+    document.getElementById("doc-loaded-banner").style.display = "block";
+    statusEl.textContent = `✓ Restaurado: ${data.restored_questions} preguntas, ${Object.keys(data.players).length} jugadores`;
+    notif(`Sesión restaurada · Sala: ${room}`);
+    startPoll();
+    show("v-waiting");  // <--- CAMBIO: mostrar waiting room
+    // No llamamos a renderHistory todavía, eso se hará cuando el host seleccione sección
+  } catch(e) { statusEl.textContent = "✗ Archivo inválido"; }
+}
+
+// Dentro de startQuestion, asegurar que el botón de forzar esté oculto inicialmente
+document.getElementById("btn-force-evaluate").style.display = "none";
+
+// En el polling o en submitMyAnswer, cuando se muestre el card de espera, si es host mostrar el botón de forzar
+if (isHost) {
+  document.getElementById("btn-force-evaluate").style.display = "inline-block";
+}
+async function forceEvaluate() {
+  const btn = document.getElementById("btn-force-evaluate");
+  btn.disabled = true;
+  btn.textContent = "Forzando...";
+  const res = await fetch("/force_evaluate", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ room })
+  });
+  const data = await res.json();
+  if (data.error) { notif(data.error); btn.disabled = false; btn.textContent = "⚡ Forzar evaluación"; return; }
+  renderResults(data);
+  renderHistory();
+}
+</script>
+</body>
+</html>
