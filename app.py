@@ -115,7 +115,6 @@ def calculate_backup_score(answer, ideal_answer, question):
     return final_score, feedback
 
 def evaluate_answer_with_variation(text, question, ideal_answer, student_answer):
-    # Respuesta vacía o solo espacios o el marcador de tiempo agotado
     if not student_answer or student_answer.strip() == "" or student_answer.strip() == "[Tiempo agotado]":
         return 0, "No respondió a tiempo."
     
@@ -174,6 +173,7 @@ Ejemplos de puntuaciones válidas: 45, 62, 78, 83, 91, 37, 55, 68, 74, 88, 94
     except Exception as e:
         print(f"Error en evaluación IA: {e}")
         return calculate_backup_score(student_answer, ideal_answer, question)
+
 # ─── Rutas ────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
@@ -223,6 +223,9 @@ def upload():
             return jsonify({"error": f"Sección {i+1}: faltan 'title' o 'content'"}), 400
         if "number" not in s:
             s["number"] = str(i + 1)
+        # Valores por defecto para tipo de sección
+        s.setdefault("type", "theory")
+        s.setdefault("ideal_answer", "")
     problems = validate_sections(sections)
     room["sections"] = sections
     room["current_section_index"] = 0
@@ -230,12 +233,12 @@ def upload():
     if problems:
         warning = " | ".join(problems)
         return jsonify({
-            "sections": [{"number": s["number"], "title": s["title"]} for s in sections],
+            "sections": [{"number": s["number"], "title": s["title"], "type": s.get("type", "theory")} for s in sections],
             "warning": warning,
             "usable_sections": len([s for s in sections if s.get("content", "").strip()]),
         })
     return jsonify({
-        "sections": [{"number": s["number"], "title": s["title"]} for s in sections]
+        "sections": [{"number": s["number"], "title": s["title"], "type": s.get("type", "theory")} for s in sections]
     })
 
 @app.route("/section", methods=["POST"])
@@ -257,6 +260,7 @@ def get_section():
         "number": section["number"],
         "title": section["title"],
         "content": section["content"],
+        "type": section.get("type", "theory"),
     })
 
 @app.route("/weakest", methods=["POST"])
@@ -276,13 +280,32 @@ def generate_question():
     room = get_room(code)
     if not room:
         return jsonify({"error": "Sala no encontrada"}), 404
+    
+    current_index = room["current_section_index"]
+    if current_index >= len(room["sections"]):
+        return jsonify({"error": "No hay sección activa"}), 400
+    
+    current_section = room["sections"][current_index]
     text = room.get("current_section_text", "").strip()
+    
+    # Si es tipo "exercise", usar directamente el contenido como pregunta
+    if current_section.get("type") == "exercise":
+        question = text
+        ideal_answer = current_section.get("ideal_answer", "")
+        if not ideal_answer:
+            ideal_answer = "Respuesta modelo no proporcionada."
+        room["current_question"] = question
+        room["current_ideal_answer"] = ideal_answer
+        room["answers"] = {}
+        room["phase"] = "answering"
+        return jsonify({"question": question, "ideal_answer": ideal_answer})
+    
+    # Si es tipo "theory" (default), generar pregunta con IA
     if not text:
-        section = room["sections"][room["current_section_index"]] if room["sections"] else {}
-        label = f"'{section.get('number','')} {section.get('title','')}'" if section else "desconocida"
+        label = f"'{current_section.get('number','')} {current_section.get('title','')}'"
         return jsonify({"error": f"La sección {label} no tiene texto legible."}), 400
 
-    past_qs = [h["question"] for h in room["question_history"] if h.get("section_index") == room["current_section_index"]]
+    past_qs = [h["question"] for h in room["question_history"] if h.get("section_index") == current_index]
     history_context = ""
     if past_qs:
         history_context = "\n\nPreguntas ya hechas sobre esta sección (NO las repitas):\n" + "\n".join(f"- {q}" for q in past_qs)
@@ -358,17 +381,13 @@ def poll():
 
 @app.route("/extend_time", methods=["POST"])
 def extend_time():
-    """Extiende el tiempo de respuesta en 30 segundos para todos los jugadores (solo host)"""
     data = request.json
     code = data.get("room", "").upper()
     room = get_room(code)
     if not room:
         return jsonify({"error": "Sala no encontrada"}), 404
-    # Solo permitir durante la fase answering
     if room["phase"] != "answering":
         return jsonify({"error": "Solo se puede extender el tiempo durante la fase de respuesta"}), 400
-    # No almacenamos nada en backend, el frontend maneja el tiempo.
-    # Simplemente confirmamos.
     return jsonify({"ok": True, "extra_seconds": 30})
 
 @app.route("/evaluate", methods=["POST"])
