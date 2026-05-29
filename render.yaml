@@ -1,9 +1,5 @@
 services:
   - type: web
-    name: el-nombre-de-tu-servicio   # Cámbialo por el nombre real
-    runtime: python
-    buildCommand: |
-      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-      source "$HOME/.cargo/env"
-      pip install -r requirements.txt
-    startCommand: gunicorn app:app   # O python app.py si usas Flask sin gunicorn
+    name: tu-servicio
+    runtime: image
+    dockerfilePath: ./Dockerfile
