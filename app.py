@@ -23,15 +23,16 @@ def new_room():
         "sections": [],
         "current_section_index": 0,
         "current_question": "",
+        "current_ideal_answer": "",
         "current_section_text": "",
-        "players": {},          # nombre -> puntos totales
-        "answers": {},          # nombre -> respuesta actual
-        "section_stats": {},    # número_seccion -> {"attempts": int, "wrong": int}
-        "question_history": [], # lista de dicts con pregunta, respuestas, scores
-        "pending_review": [],   # índices de secciones que necesitan repaso
-        "phase": "setup",       # setup, reading, answering, results
-        "player_names": [],     # lista de nombres
-        "connected": {},        # nombre -> timestamp
+        "players": {},
+        "answers": {},
+        "section_stats": {},
+        "question_history": [],
+        "pending_review": [],
+        "phase": "setup",
+        "player_names": [],
+        "connected": {},
         "last_results_cache": None,
     }
 
@@ -50,7 +51,6 @@ def validate_sections(sections):
     return problems
 
 def weakest_section(room):
-    """Índice de la sección con mayor ratio de respuestas incorrectas (score<60)"""
     stats = room["section_stats"]
     sections = room["sections"]
     best_idx = None
@@ -62,7 +62,6 @@ def weakest_section(room):
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_idx = i
-    # Si hay secciones pendientes de repaso, priorizar la que más se repite
     if room["pending_review"]:
         from collections import Counter
         freq = Counter(room["pending_review"])
@@ -176,23 +175,42 @@ def generate_question():
         section = room["sections"][room["current_section_index"]] if room["sections"] else {}
         label = f"'{section.get('number','')} {section.get('title','')}'" if section else "desconocida"
         return jsonify({"error": f"La sección {label} no tiene texto legible."}), 400
-    # Historial de preguntas de esta misma sección para evitar repetición
+
     past_qs = [h["question"] for h in room["question_history"] if h.get("section_index") == room["current_section_index"]]
     history_context = ""
     if past_qs:
         history_context = "\n\nPreguntas ya hechas sobre esta sección (NO las repitas):\n" + "\n".join(f"- {q}" for q in past_qs)
+
+    prompt = f"""Lee el siguiente fragmento de texto y genera:
+1. Una pregunta de comprensión clara y directa.
+2. Una respuesta ideal (modelo) para esa pregunta.
+
+Devuelve SOLO un objeto JSON con dos campos: "question" y "ideal_answer".
+
+Texto:
+{text}
+{history_context}
+"""
     response = co.chat(
         model="command-r-plus-08-2024",
-        messages=[{
-            "role": "user",
-            "content": f"Lee el siguiente fragmento de texto y genera UNA sola pregunta de comprensión clara y directa. Solo escribe la pregunta, sin numeración ni explicación.\n\n{text}{history_context}"
-        }]
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"}
     )
-    question = response.message.content[0].text.strip()
+    raw = response.message.content[0].text.strip()
+    try:
+        raw = re.sub(r"```json|```", "", raw).strip()
+        result = json.loads(raw)
+        question = result.get("question", "")
+        ideal_answer = result.get("ideal_answer", "")
+    except Exception:
+        question = "No se pudo generar la pregunta."
+        ideal_answer = "No disponible."
+
     room["current_question"] = question
+    room["current_ideal_answer"] = ideal_answer
     room["answers"] = {}
     room["phase"] = "answering"
-    return jsonify({"question": question})
+    return jsonify({"question": question, "ideal_answer": ideal_answer})
 
 @app.route("/answer", methods=["POST"])
 def submit_answer():
@@ -229,6 +247,7 @@ def poll():
         "all_answered": len(room["answers"]) >= len(room["player_names"]),
         "player_names": room["player_names"],
         "question": room.get("current_question", ""),
+        "ideal_answer": room.get("current_ideal_answer", ""),
     })
 
 @app.route("/evaluate", methods=["POST"])
@@ -239,56 +258,58 @@ def evaluate():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-# Añadir esta función después de /evaluate (o dentro del mismo)
+
 @app.route("/force_evaluate", methods=["POST"])
 def force_evaluate():
-    """Evalúa la pregunta actual aunque no hayan respondido todos los jugadores.
-       Los que no respondieron obtienen score 0 y feedback 'No respondió'.
-    """
     data = request.json or {}
     code = data.get("room", "").upper()
     room = get_room(code)
     if not room:
         return jsonify({"error": "Sala no encontrada"}), 404
-    
-    # Verificar que el que pide es el host (no hay autenticación, pero podemos asumir que solo el host llama)
-    # Lo dejamos sin restricción extra por simplicidad.
-    
+
     question = room.get("current_question", "")
+    ideal_answer = room.get("current_ideal_answer", "")
     text = room.get("current_section_text", "")
     answers = room.get("answers", {})
-    
-    # Completar respuestas faltantes con vacío para todos los jugadores
+
     for player in room["player_names"]:
         if player not in answers:
-            answers[player] = ""  # respuesta vacía
-    
-    # Ahora evaluamos igual que en /evaluate, pero con todas las respuestas
+            answers[player] = ""
+
     if not answers:
         return jsonify({"error": "No hay respuestas"}), 400
-    
+
     section = room["sections"][room["current_section_index"]]
     section_key = section["number"]
     section_idx = room["current_section_index"]
-    
+
     if section_key not in room["section_stats"]:
         room["section_stats"][section_key] = {"attempts": 0, "wrong": 0}
-    
+
     results = {}
     any_wrong = False
-    
+
     for player, answer in answers.items():
         if answer.strip() == "":
-            # No respondió
             score = 0
             feedback = "No respondió a tiempo."
             points = 0
         else:
-            # Evaluar con IA
-            prompt = f"Texto de referencia:\n{text}\n\nPregunta: {question}\n\nRespuesta del estudiante: {answer}\n\nEvalúa la respuesta del 0 al 100 según qué tan correcta y completa es. Responde SOLO en este formato JSON exacto:\n{{ \"score\": <número 0-100>, \"feedback\": \"<una oración explicando el puntaje>\" }}"
+            prompt = f"""Texto de referencia:
+{text}
+
+Pregunta: {question}
+
+Respuesta ideal (modelo): {ideal_answer}
+
+Respuesta del estudiante: {answer}
+
+Evalúa la respuesta del 0 al 100 según qué tan correcta y completa es, comparándola con la respuesta ideal. Responde SOLO en este formato JSON exacto:
+{{ "score": <número 0-100>, "feedback": "<una oración explicando el puntaje>" }}"""
             response = co.chat(
                 model="command-r-plus-08-2024",
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
             )
             raw = response.message.content[0].text.strip()
             try:
@@ -299,7 +320,7 @@ def force_evaluate():
             score = result.get("score", 0)
             feedback = result.get("feedback", "")
             points = round(score / 100 * 3, 1)
-        
+
         room["players"][player] = round(room["players"].get(player, 0) + points, 1)
         results[player] = {
             "answer": answer if answer else "(no respondió)",
@@ -312,13 +333,13 @@ def force_evaluate():
         if score < 60:
             room["section_stats"][section_key]["wrong"] += 1
             any_wrong = True
-    
-    # Guardar en historial
+
     history_entry = {
         "section_index": section_idx,
         "section_number": section_key,
         "section_title": section["title"],
         "question": question,
+        "ideal_answer": ideal_answer,
         "needs_review": any_wrong,
         "answers": {
             p: {
@@ -332,27 +353,31 @@ def force_evaluate():
         },
     }
     room["question_history"].append(history_entry)
-    
-    # Actualizar pending_review
+
     if any_wrong:
         if section_idx not in room["pending_review"]:
             room["pending_review"].append(section_idx)
     else:
         if section_idx in room["pending_review"]:
             room["pending_review"].remove(section_idx)
-    
+
     room["last_results_cache"] = {
         "results": results,
         "scoreboard": room["players"],
         "has_pending_review": len(room["pending_review"]) > 0,
+        "question": question,
+        "ideal_answer": ideal_answer,
     }
     room["phase"] = "results"
-    
+
     return jsonify({
         "results": results,
         "scoreboard": room["players"],
         "has_pending_review": len(room["pending_review"]) > 0,
+        "question": question,
+        "ideal_answer": ideal_answer,
     })
+
 def _evaluate_inner():
     data = request.json or {}
     code = data.get("room", "").upper()
@@ -360,6 +385,7 @@ def _evaluate_inner():
     if not room:
         return jsonify({"error": "Sala no encontrada"}), 404
     question = room.get("current_question", "")
+    ideal_answer = room.get("current_ideal_answer", "")
     text = room.get("current_section_text", "")
     answers = room.get("answers", {})
     if not answers:
@@ -372,10 +398,21 @@ def _evaluate_inner():
     results = {}
     any_wrong = False
     for player, answer in answers.items():
-        prompt = f"Texto de referencia:\n{text}\n\nPregunta: {question}\n\nRespuesta del estudiante: {answer}\n\nEvalúa la respuesta del 0 al 100 según qué tan correcta y completa es. Responde SOLO en este formato JSON exacto:\n{{ \"score\": <número 0-100>, \"feedback\": \"<una oración explicando el puntaje>\" }}"
+        prompt = f"""Texto de referencia:
+{text}
+
+Pregunta: {question}
+
+Respuesta ideal (modelo): {ideal_answer}
+
+Respuesta del estudiante: {answer}
+
+Evalúa la respuesta del 0 al 100 según qué tan correcta y completa es, comparándola con la respuesta ideal. Responde SOLO en este formato JSON exacto:
+{{ "score": <número 0-100>, "feedback": "<una oración explicando el puntaje>" }}"""
         response = co.chat(
             model="command-r-plus-08-2024",
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
         )
         raw = response.message.content[0].text.strip()
         try:
@@ -398,12 +435,13 @@ def _evaluate_inner():
         if score < 60:
             room["section_stats"][section_key]["wrong"] += 1
             any_wrong = True
-    # Guardar en historial
+
     history_entry = {
         "section_index": section_idx,
         "section_number": section_key,
         "section_title": section["title"],
         "question": question,
+        "ideal_answer": ideal_answer,
         "needs_review": any_wrong,
         "answers": {
             p: {
@@ -417,23 +455,28 @@ def _evaluate_inner():
         },
     }
     room["question_history"].append(history_entry)
-    # Actualizar pending_review
+
     if any_wrong:
         if section_idx not in room["pending_review"]:
             room["pending_review"].append(section_idx)
     else:
         if section_idx in room["pending_review"]:
             room["pending_review"].remove(section_idx)
+
     room["last_results_cache"] = {
         "results": results,
         "scoreboard": room["players"],
         "has_pending_review": len(room["pending_review"]) > 0,
+        "question": question,
+        "ideal_answer": ideal_answer,
     }
     room["phase"] = "results"
     return jsonify({
         "results": results,
         "scoreboard": room["players"],
         "has_pending_review": len(room["pending_review"]) > 0,
+        "question": question,
+        "ideal_answer": ideal_answer,
     })
 
 @app.route("/history", methods=["POST"])
@@ -514,19 +557,16 @@ def import_session():
         code = str(uuid.uuid4())[:4].upper()
     room = new_room()
     room["sections"] = session.get("sections", [])
-    # Restaurar jugadores
     for name, pts in session.get("players", []):
         room["players"][name] = pts
         if name not in room["player_names"]:
             room["player_names"].append(name)
-    # Restaurar historial y reconstruir pending_review
     room["question_history"] = session.get("question_history", [])
     pending_set = set()
     for h in room["question_history"]:
         if h.get("needs_review", False):
             pending_set.add(h.get("section_index", 0))
     room["pending_review"] = list(pending_set)
-    # Reconstruir section_stats
     room["section_stats"] = {}
     for h in room["question_history"]:
         key = h["section_number"]
@@ -535,7 +575,6 @@ def import_session():
         scores = [a["score"] for a in h["answers"].values()]
         room["section_stats"][key]["attempts"] += len(scores)
         room["section_stats"][key]["wrong"] += sum(1 for s in scores if s < 60)
-    # Añadir host si no estaba
     if host_name not in room["player_names"]:
         room["player_names"].append(host_name)
         room["players"].setdefault(host_name, 0)

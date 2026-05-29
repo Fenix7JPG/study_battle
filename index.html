@@ -56,7 +56,6 @@
       <div class="card-title">Jugadores conectados</div>
       <div id="connected-list" class="answered-row"></div>
 
-      <!-- Upload section (visible solo cuando no hay secciones cargadas aún) -->
       <div id="upload-section" class="gap-top">
         <input type="file" id="fileInput" accept=".json" style="color:var(--muted); font-size:12px"/>
         <small>Adjunta el documento <code>.json</code> con las secciones del material</small>
@@ -64,7 +63,6 @@
         <small id="upload-status"></small>
       </div>
 
-      <!-- Banner cuando ya hay secciones cargadas (por importación o upload previo) -->
       <div id="doc-loaded-banner" style="display:none; margin-top:12px; padding:10px; background:var(--surface2,#1e293b); border-radius:8px; border:1px solid var(--success)">
         <span style="color:var(--success); font-size:13px">✓ Secciones cargadas</span><br>
         <small style="color:var(--muted)">Puedes comenzar la partida cuando todos estén listos.</small>
@@ -126,18 +124,24 @@
       <button class="btn btn-primary gap-top" id="btn-submit" onclick="submitMyAnswer()" style="margin-top:10px">Enviar →</button>
       <small id="my-status"></small>
     </div>
-    <div class="card" id="waiting-others-card" style="display:none">
-    <div class="card-title">Esperando respuestas</div>
-    <div id="answered-bubbles" class="answered-row"></div>
-    <div class="split">
-        <button class="btn btn-primary" id="btn-evaluate" onclick="showResults()">Ver resultados →</button>
-        <button class="btn btn-warn" id="btn-force-evaluate" onclick="forceEvaluate()" style="display:none;">⚡ Forzar evaluación</button>
-    </div>
+    <div class="card" id="waiting-others-card">
+      <div class="card-title">Esperando respuestas</div>
+      <div id="answered-bubbles" class="answered-row"></div>
+      <div class="split">
+          <button class="btn btn-primary" id="btn-evaluate" onclick="showResults()">Ver resultados →</button>
+          <button class="btn btn-warn" id="btn-force-evaluate" onclick="forceEvaluate()" style="display:none;">⚡ Forzar evaluación</button>
+      </div>
     </div>
   </div>
 
   <!-- RESULTS -->
   <div class="view" id="v-results">
+    <div class="card" id="results-question-card">
+      <div class="card-title">📋 Pregunta</div>
+      <p id="results-question" style="font-weight:500; background:var(--surface2); padding:10px; border-radius:8px;"></p>
+      <div class="card-title" style="margin-top:8px">✨ Respuesta ideal</div>
+      <p id="results-ideal-answer" style="color:var(--success); background:var(--surface2); padding:10px; border-radius:8px;"></p>
+    </div>
     <div class="card">
       <div class="card-title">Resultados</div>
       <div id="results-list"></div>
@@ -318,10 +322,14 @@ function startTimer(seconds) {
   const el = document.getElementById("timer");
   let rem = seconds;
   function tick() {
+    if (rem === 0) {
+      playBeep();
+      clearInterval(timerInterval);
+      return;
+    }
     const m = Math.floor(rem / 60), s = rem % 60;
-    el.textContent = m + ":" + String(s).padStart(2,"0");
+    el.textContent = m + ":" + String(s).padStart(2, "0");
     el.classList.toggle("urgent", rem <= 10);
-    if (rem <= 0) clearInterval(timerInterval);
     rem--;
   }
   tick();
@@ -337,13 +345,17 @@ async function startQuestion() {
   document.getElementById("btn-submit").disabled = false;
   document.getElementById("my-status").textContent = "";
   document.getElementById("question-text").textContent = "Generando pregunta…";
-  document.getElementById("waiting-others-card").style.display = "none";
+  // Mostrar bloque de espera desde el principio
+  document.getElementById("waiting-others-card").style.display = "block";
+  // Limpiar burbujas anteriores
+  document.getElementById("answered-bubbles").innerHTML = "";
   const btnEval = document.getElementById("btn-evaluate");
-  btnEval.style.display = "none";
+  btnEval.style.display = "block";   // host lo ve desde el inicio
   btnEval.disabled = false;
   btnEval.textContent = "Ver resultados →";
   document.getElementById("answer-player-label").textContent = myName;
   show("v-question");
+  
   const res = await fetch("/question", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
@@ -357,7 +369,21 @@ async function startQuestion() {
     return;
   }
   document.getElementById("question-text").textContent = data.question;
-  document.getElementById("btn-force-evaluate").style.display = "none";
+  // Para el host: mostrar botón forzar evaluación siempre visible
+  if (isHost) {
+    document.getElementById("btn-force-evaluate").style.display = "inline-block";
+  } else {
+    document.getElementById("btn-force-evaluate").style.display = "none";
+  }
+  // Actualizar burbujas con respuestas ya recibidas (si las hay)
+  const pollRes = await fetch("/poll", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ room })
+  });
+  const pollData = await pollRes.json();
+  if (pollData.players_answered) {
+    updateAnsweredBubbles(pollData.players_answered);
+  }
 }
 
 // ---------- ANSWER ----------
@@ -378,18 +404,11 @@ async function submitMyAnswer() {
   document.getElementById("my-status").textContent = "✓ Respuesta guardada";
   document.getElementById("my-status").style.color = "var(--success)";
   myAnswered = true;
-  document.getElementById("waiting-others-card").style.display = "block";
+  // Las burbujas ya se actualizan por polling, así que no es necesario llamar aquí
   if (data.player_names) playerNames = data.player_names;
-  updateAnsweredBubbles(data.players_answered);
-  if (isHost) {
-    document.getElementById("btn-force-evaluate").style.display = "inline-block";
-  }
+  // Si el host y todos respondieron, habilitar botón (ya está visible)
   if (isHost && data.all_answered) {
-    if (playerNames.length === 1) {
-      setTimeout(() => showResults(), 500);
-    } else {
-      document.getElementById("btn-evaluate").style.display = "block";
-    }
+    document.getElementById("btn-evaluate").disabled = false;
   }
 }
 
@@ -416,6 +435,9 @@ async function showResults() {
 }
 
 function renderResults(data) {
+  document.getElementById("results-question").textContent = data.question || "(no disponible)";
+  document.getElementById("results-ideal-answer").textContent = data.ideal_answer || "(no disponible)";
+
   const list = document.getElementById("results-list");
   list.innerHTML = "";
   for (const [player, r] of Object.entries(data.results)) {
@@ -507,7 +529,7 @@ async function doPoll() {
         document.getElementById("btn-submit").disabled = false;
         document.getElementById("my-status").textContent = "";
         document.getElementById("answer-player-label").textContent = myName;
-        document.getElementById("waiting-others-card").style.display = "none";
+        document.getElementById("waiting-others-card").style.display = "block";
         document.getElementById("question-text").textContent = data.question || "Cargando…";
         show("v-question");
         clearInterval(timerInterval);
@@ -516,10 +538,12 @@ async function doPoll() {
         await fetchAndShowResults();
       }
     }
+    // Actualización en tiempo real de burbujas para TODOS durante la fase answering
     if (data.phase === "answering") {
       updateAnsweredBubbles(data.players_answered);
+      // Habilitar botón de resultados si el host y todos respondieron
       if (isHost && data.all_answered && myAnswered) {
-        document.getElementById("btn-evaluate").style.display = "block";
+        document.getElementById("btn-evaluate").disabled = false;
       }
     }
     lastPhase = data.phase;
@@ -614,9 +638,6 @@ async function importSession() {
   }
 }
 
-// Inicialización de elementos visuales
-document.getElementById("btn-force-evaluate").style.display = "none";
-
 async function forceEvaluate() {
   const btn = document.getElementById("btn-force-evaluate");
   btn.disabled = true;
@@ -631,6 +652,14 @@ async function forceEvaluate() {
   renderResults(data);
   renderHistory();
 }
+
+function playBeep() {
+  const audio = new Audio('/static/beep.mp3');
+  audio.play().catch(e => console.warn("No se pudo reproducir el audio:", e));
+}
+
+// Inicialización de elementos
+document.getElementById("btn-force-evaluate").style.display = "none";
 </script>
 </body>
 </html>
