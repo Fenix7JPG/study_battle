@@ -345,13 +345,11 @@ async function startQuestion() {
   document.getElementById("btn-submit").disabled = false;
   document.getElementById("my-status").textContent = "";
   document.getElementById("question-text").textContent = "Generando pregunta…";
-  // Mostrar bloque de espera desde el principio
   document.getElementById("waiting-others-card").style.display = "block";
-  // Limpiar burbujas anteriores
   document.getElementById("answered-bubbles").innerHTML = "";
   const btnEval = document.getElementById("btn-evaluate");
-  btnEval.style.display = "block";   // host lo ve desde el inicio
-  btnEval.disabled = false;
+  btnEval.style.display = "block";
+  btnEval.disabled = true;  // Deshabilitado hasta que el host responda
   btnEval.textContent = "Ver resultados →";
   document.getElementById("answer-player-label").textContent = myName;
   show("v-question");
@@ -369,13 +367,12 @@ async function startQuestion() {
     return;
   }
   document.getElementById("question-text").textContent = data.question;
-  // Para el host: mostrar botón forzar evaluación siempre visible
   if (isHost) {
     document.getElementById("btn-force-evaluate").style.display = "inline-block";
   } else {
     document.getElementById("btn-force-evaluate").style.display = "none";
   }
-  // Actualizar burbujas con respuestas ya recibidas (si las hay)
+  // Actualizar burbujas con respuestas ya recibidas
   const pollRes = await fetch("/poll", {
     method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({ room })
@@ -404,12 +401,13 @@ async function submitMyAnswer() {
   document.getElementById("my-status").textContent = "✓ Respuesta guardada";
   document.getElementById("my-status").style.color = "var(--success)";
   myAnswered = true;
-  // Las burbujas ya se actualizan por polling, así que no es necesario llamar aquí
-  if (data.player_names) playerNames = data.player_names;
-  // Si el host y todos respondieron, habilitar botón (ya está visible)
-  if (isHost && data.all_answered) {
+  
+  // Si el host acaba de responder, habilitar el botón de evaluación normal
+  if (isHost) {
     document.getElementById("btn-evaluate").disabled = false;
   }
+  
+  if (data.player_names) playerNames = data.player_names;
 }
 
 function updateAnsweredBubbles(answered) {
@@ -420,6 +418,17 @@ function updateAnsweredBubbles(answered) {
 
 // ---------- EVALUATE ----------
 async function showResults() {
+  // Validación: el anfitrión no puede evaluar si no ha respondido
+  if (isHost && !myAnswered) {
+    notif("❌ Debes enviar tu respuesta antes de evaluar a los demás.", 4000);
+    // Marcar visualmente el campo de respuesta
+    document.getElementById("my-answer").style.border = "2px solid var(--danger)";
+    setTimeout(() => {
+      document.getElementById("my-answer").style.border = "";
+    }, 2000);
+    return;
+  }
+  
   const btn = document.getElementById("btn-evaluate");
   btn.disabled = true;
   btn.textContent = "Evaluando…";
@@ -538,10 +547,9 @@ async function doPoll() {
         await fetchAndShowResults();
       }
     }
-    // Actualización en tiempo real de burbujas para TODOS durante la fase answering
     if (data.phase === "answering") {
       updateAnsweredBubbles(data.players_answered);
-      // Habilitar botón de resultados si el host y todos respondieron
+      // Si el host ya respondió y todos respondieron, habilitar botón
       if (isHost && data.all_answered && myAnswered) {
         document.getElementById("btn-evaluate").disabled = false;
       }
@@ -639,6 +647,7 @@ async function importSession() {
 }
 
 async function forceEvaluate() {
+  // La evaluación forzada NO valida si el host respondió o no
   const btn = document.getElementById("btn-force-evaluate");
   btn.disabled = true;
   btn.textContent = "Forzando...";
@@ -658,7 +667,7 @@ function playBeep() {
   audio.play().catch(e => console.warn("No se pudo reproducir el audio:", e));
 }
 
-// Inicialización de elementos
+// Inicialización
 document.getElementById("btn-force-evaluate").style.display = "none";
 </script>
 </body>
