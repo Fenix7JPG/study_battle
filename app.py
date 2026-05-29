@@ -8,6 +8,8 @@ import uuid
 import time
 from difflib import SequenceMatcher
 
+from models import room
+
 load_dotenv()
 
 app = Flask(__name__, static_folder="static")
@@ -318,7 +320,40 @@ def generate_question():
             "ideal_answer": ideal_answer,
             "answer_time": room.get("answer_time_seconds", 300)
         })
-    
+    # Si es tipo "exercise_dynamic", generar ejercicio nuevo similar al ejemplo
+    if current_section.get("type") == "exercise_dynamic":
+        example = text  # el content del JSON actúa como ejemplo o plantilla
+        prompt = f"""Eres un profesor de matemáticas. Basándote en el siguiente ejemplo o tipo de ejercicio,
+    genera un ejercicio NUEVO y DIFERENTE (cambiando números o expresiones) del mismo estilo.
+    Luego, proporciona la respuesta ideal (modelo) para ese ejercicio.
+
+    Devuelve SOLO un objeto JSON con dos campos: "question" (el enunciado del ejercicio) y "ideal_answer".
+
+    Ejemplo/tipo de ejercicio:
+    {example}
+
+    IMPORTANTE: El ejercicio debe ser diferente al ejemplo, pero del mismo tipo (por ejemplo, si el ejemplo es un sistema 2x2 por sustitución, genera otro sistema 2x2 por sustitución con números distintos)."""
+        
+        response = co.chat(
+            model="command-r-plus-08-2024",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        raw = response.message.content[0].text.strip()
+        raw = re.sub(r"```json|```", "", raw).strip()
+        result = json.loads(raw)
+        question = result.get("question", "")
+        ideal_answer = result.get("ideal_answer", "")
+        
+        room["current_question"] = question
+        room["current_ideal_answer"] = ideal_answer
+        room["answers"] = {}
+        room["phase"] = "answering"
+        return jsonify({
+            "question": question,
+            "ideal_answer": ideal_answer,
+            "answer_time": room.get("answer_time_seconds", 300)
+        })
     # Si es tipo "theory" (default), generar pregunta con IA evitando repeticiones
     if not text:
         label = f"'{current_section.get('number','')} {current_section.get('title','')}'"
