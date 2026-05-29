@@ -1,5 +1,5 @@
 Flask==3.0.0
-cohere==4.21
-transformers==4.45.2
+cohere>=5.5.0
+transformers>=4.45.2
 python-dotenv==1.0.0
 
