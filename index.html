@@ -126,10 +126,12 @@
     </div>
     <div class="card" id="waiting-others-card">
       <div class="card-title">Esperando respuestas</div>
+      <div id="answer-timer" style="font-size:24px; text-align:center; margin:10px 0;">01:00</div>
       <div id="answered-bubbles" class="answered-row"></div>
       <div class="split">
           <button class="btn btn-primary" id="btn-evaluate" onclick="showResults()">Ver resultados →</button>
           <button class="btn btn-warn" id="btn-force-evaluate" onclick="forceEvaluate()" style="display:none;">⚡ Forzar evaluación</button>
+          <button class="btn btn-secondary" id="btn-extend-time" onclick="extendAnswerTime()" style="display:none;">➕ Añadir 30s</button>
       </div>
     </div>
   </div>
@@ -172,9 +174,11 @@ let isHost = false;
 let sections = [];
 let pollInterval = null;
 let timerInterval = null;
+let answerTimerInterval = null;
 let myAnswered = false;
 let playerNames = [];
 let lastPhase = "";
+let currentAnswerTimeLeft = 60;  // segundos
 
 // ---------- VIEW ROUTER ----------
 function show(id) {
@@ -300,6 +304,15 @@ async function loadWeakest() {
   notif("Seleccionada la sección más débil");
 }
 
+function calculateReadTime(text) {
+  const words = text.trim().split(/\s+/).length;
+  let extra = 0;
+  if (words > 1500) extra = 90;
+  else if (words > 1000) extra = 60;
+  else if (words > 500) extra = 30;
+  return 120 + extra; // base 2 min + extra
+}
+
 async function loadSection() {
   const index = parseInt(document.getElementById("section-select").value);
   const res = await fetch("/section", {
@@ -309,22 +322,25 @@ async function loadSection() {
   });
   const data = await res.json();
   if (data.error) { notif(data.error); return; }
-  document.getElementById("section-content").textContent = data.number + " " + data.title + "\n\n" + data.content;
+  const fullText = data.number + " " + data.title + "\n\n" + data.content;
+  document.getElementById("section-content").textContent = fullText;
   show("v-read");
   document.getElementById("read-host-controls").style.display = "block";
   document.getElementById("read-player-msg").style.display = "none";
-  startTimer(120);
+  const readTime = calculateReadTime(data.content);
+  startTimer(readTime);
 }
 
-// ---------- TIMER ----------
+// ---------- TIMER (lectura) ----------
 function startTimer(seconds) {
   clearInterval(timerInterval);
   const el = document.getElementById("timer");
   let rem = seconds;
   function tick() {
-    if (rem === 0) {
+    if (rem <= 0) {
       playBeep();
       clearInterval(timerInterval);
+      // No avanzamos automáticamente, solo suena
       return;
     }
     const m = Math.floor(rem / 60), s = rem % 60;
@@ -336,9 +352,48 @@ function startTimer(seconds) {
   timerInterval = setInterval(tick, 1000);
 }
 
+// ---------- ANSWER TIMER (con auto-envío) ----------
+function startAnswerTimer(seconds) {
+  clearInterval(answerTimerInterval);
+  currentAnswerTimeLeft = seconds;
+  const el = document.getElementById("answer-timer");
+  if (!el) return;
+  function tick() {
+    if (currentAnswerTimeLeft <= 0) {
+      clearInterval(answerTimerInterval);
+      // Si no se ha enviado respuesta, enviar automáticamente (incluso vacía)
+      if (!myAnswered) {
+        notif("⏰ Tiempo agotado. Se enviará tu respuesta actual.", 3000);
+        submitMyAnswer(true); // auto-envío
+      }
+      return;
+    }
+    const m = Math.floor(currentAnswerTimeLeft / 60);
+    const s = currentAnswerTimeLeft % 60;
+    el.textContent = `${m.toString().padStart(2,"0")}:${s.toString().padStart(2,"0")}`;
+    el.classList.toggle("urgent", currentAnswerTimeLeft <= 10);
+    currentAnswerTimeLeft--;
+  }
+  tick();
+  answerTimerInterval = setInterval(tick, 1000);
+}
+
+function extendAnswerTime() {
+  if (!isHost) return;
+  currentAnswerTimeLeft += 30;
+  notif("➕ Tiempo extendido +30 segundos", 2000);
+  // También notificar al backend (opcional)
+  fetch("/extend_time", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ room })
+  }).catch(e => console.warn);
+}
+
 // ---------- QUESTION ----------
 async function startQuestion() {
   clearInterval(timerInterval);
+  clearInterval(answerTimerInterval);
   myAnswered = false;
   document.getElementById("my-answer").value = "";
   document.getElementById("my-answer").disabled = false;
@@ -349,9 +404,19 @@ async function startQuestion() {
   document.getElementById("answered-bubbles").innerHTML = "";
   const btnEval = document.getElementById("btn-evaluate");
   btnEval.style.display = "block";
-  btnEval.disabled = true;  // Deshabilitado hasta que el host responda
+  btnEval.disabled = true;
   btnEval.textContent = "Ver resultados →";
   document.getElementById("answer-player-label").textContent = myName;
+  
+  // Mostrar botón de extender tiempo solo para host
+  if (isHost) {
+    document.getElementById("btn-extend-time").style.display = "inline-block";
+    document.getElementById("btn-force-evaluate").style.display = "inline-block";
+  } else {
+    document.getElementById("btn-extend-time").style.display = "none";
+    document.getElementById("btn-force-evaluate").style.display = "none";
+  }
+  
   show("v-question");
   
   const res = await fetch("/question", {
@@ -367,12 +432,11 @@ async function startQuestion() {
     return;
   }
   document.getElementById("question-text").textContent = data.question;
-  if (isHost) {
-    document.getElementById("btn-force-evaluate").style.display = "inline-block";
-  } else {
-    document.getElementById("btn-force-evaluate").style.display = "none";
-  }
-  // Actualizar burbujas con respuestas ya recibidas
+  
+  // Iniciar temporizador de respuesta: 60 segundos base
+  startAnswerTimer(60);
+  
+  // Actualizar burbujas iniciales
   const pollRes = await fetch("/poll", {
     method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({ room })
@@ -384,11 +448,21 @@ async function startQuestion() {
 }
 
 // ---------- ANSWER ----------
-async function submitMyAnswer() {
-  const answer = document.getElementById("my-answer").value.trim();
-  if (!answer) { notif("Escribe una respuesta"); return; }
+async function submitMyAnswer(isAuto = false) {
+  if (myAnswered && !isAuto) {
+    notif("Ya enviaste tu respuesta");
+    return;
+  }
+  let answer = document.getElementById("my-answer").value.trim();
+  if (!answer && !isAuto) {
+    notif("Escribe una respuesta");
+    return;
+  }
+  if (isAuto && !answer) {
+    answer = "[Tiempo agotado]";
+  }
   document.getElementById("btn-submit").disabled = true;
-  document.getElementById("btn-submit").textContent = "Enviando…";
+  document.getElementById("btn-submit").textContent = isAuto ? "Auto-enviado" : "Enviando…";
   const res = await fetch("/answer", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
@@ -402,11 +476,9 @@ async function submitMyAnswer() {
   document.getElementById("my-status").style.color = "var(--success)";
   myAnswered = true;
   
-  // Si el host acaba de responder, habilitar el botón de evaluación normal
   if (isHost) {
     document.getElementById("btn-evaluate").disabled = false;
   }
-  
   if (data.player_names) playerNames = data.player_names;
 }
 
@@ -418,10 +490,8 @@ function updateAnsweredBubbles(answered) {
 
 // ---------- EVALUATE ----------
 async function showResults() {
-  // Validación: el anfitrión no puede evaluar si no ha respondido
   if (isHost && !myAnswered) {
     notif("❌ Debes enviar tu respuesta antes de evaluar a los demás.", 4000);
-    // Marcar visualmente el campo de respuesta
     document.getElementById("my-answer").style.border = "2px solid var(--danger)";
     setTimeout(() => {
       document.getElementById("my-answer").style.border = "";
@@ -441,6 +511,7 @@ async function showResults() {
   if (data.error) { notif(data.error); btn.disabled = false; btn.textContent = "Ver resultados →"; return; }
   renderResults(data);
   renderHistory();
+  clearInterval(answerTimerInterval); // detener timer de respuesta
 }
 
 function renderResults(data) {
@@ -529,7 +600,11 @@ async function doPoll() {
         show("v-read");
         document.getElementById("read-host-controls").style.display = "none";
         document.getElementById("read-player-msg").style.display = "block";
-        startTimer(120);
+        // Calcular tiempo de lectura en cliente también
+        const sectionText = document.getElementById("section-content").textContent;
+        const contentOnly = sectionText.replace(/^\d+\s+[^\n]+\n\n/, ""); // extraer solo contenido
+        const readTime = calculateReadTime(contentOnly);
+        startTimer(readTime);
       }
       if (data.phase === "answering" && lastPhase !== "answering") {
         myAnswered = false;
@@ -542,14 +617,15 @@ async function doPoll() {
         document.getElementById("question-text").textContent = data.question || "Cargando…";
         show("v-question");
         clearInterval(timerInterval);
+        startAnswerTimer(60);
       }
       if (data.phase === "results" && lastPhase !== "results") {
         await fetchAndShowResults();
+        clearInterval(answerTimerInterval);
       }
     }
     if (data.phase === "answering") {
       updateAnsweredBubbles(data.players_answered);
-      // Si el host ya respondió y todos respondieron, habilitar botón
       if (isHost && data.all_answered && myAnswered) {
         document.getElementById("btn-evaluate").disabled = false;
       }
@@ -565,7 +641,10 @@ async function fetchCurrentSection() {
       body: JSON.stringify({ room })
     });
     const data = await res.json();
-    if (data.content) document.getElementById("section-content").textContent = data.number + " " + data.title + "\n\n" + data.content;
+    if (data.content) {
+      const fullText = data.number + " " + data.title + "\n\n" + data.content;
+      document.getElementById("section-content").textContent = fullText;
+    }
   } catch(e) {}
 }
 
@@ -647,7 +726,6 @@ async function importSession() {
 }
 
 async function forceEvaluate() {
-  // La evaluación forzada NO valida si el host respondió o no
   const btn = document.getElementById("btn-force-evaluate");
   btn.disabled = true;
   btn.textContent = "Forzando...";
@@ -660,6 +738,7 @@ async function forceEvaluate() {
   if (data.error) { notif(data.error); btn.disabled = false; btn.textContent = "⚡ Forzar evaluación"; return; }
   renderResults(data);
   renderHistory();
+  clearInterval(answerTimerInterval);
 }
 
 function playBeep() {
@@ -669,6 +748,7 @@ function playBeep() {
 
 // Inicialización
 document.getElementById("btn-force-evaluate").style.display = "none";
+document.getElementById("btn-extend-time").style.display = "none";
 </script>
 </body>
 </html>
