@@ -115,7 +115,8 @@ def calculate_backup_score(answer, ideal_answer, question):
     return final_score, feedback
 
 def evaluate_answer_with_variation(text, question, ideal_answer, student_answer):
-    if not student_answer or student_answer.strip() == "":
+    # Respuesta vacía o solo espacios o el marcador de tiempo agotado
+    if not student_answer or student_answer.strip() == "" or student_answer.strip() == "[Tiempo agotado]":
         return 0, "No respondió a tiempo."
     
     prompt = f"""Eres un profesor experto evaluando respuestas de estudiantes.
@@ -173,7 +174,6 @@ Ejemplos de puntuaciones válidas: 45, 62, 78, 83, 91, 37, 55, 68, 74, 88, 94
     except Exception as e:
         print(f"Error en evaluación IA: {e}")
         return calculate_backup_score(student_answer, ideal_answer, question)
-
 # ─── Rutas ────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():

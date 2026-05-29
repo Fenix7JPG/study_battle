@@ -459,7 +459,7 @@ async function submitMyAnswer(isAuto = false) {
     return;
   }
   if (isAuto && !answer) {
-    answer = "[Tiempo agotado]";
+    answer = ""; 
   }
   document.getElementById("btn-submit").disabled = true;
   document.getElementById("btn-submit").textContent = isAuto ? "Auto-enviado" : "Enviando…";
