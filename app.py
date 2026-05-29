@@ -6,6 +6,7 @@ import re
 import json
 import uuid
 import time
+from difflib import SequenceMatcher
 
 load_dotenv()
 
@@ -67,6 +68,140 @@ def weakest_section(room):
         freq = Counter(room["pending_review"])
         return freq.most_common(1)[0][0]
     return best_idx if best_idx is not None else 0
+
+def calculate_backup_score(answer, ideal_answer, question):
+    """Calcula una puntuación de respaldo más granular (0-100)"""
+    if not answer or answer.strip() == "":
+        return 0, "No respondió a tiempo."
+    
+    answer_lower = answer.lower()
+    ideal_lower = ideal_answer.lower()
+    question_lower = question.lower()
+    
+    # 1. Similitud de texto (usando SequenceMatcher)
+    text_similarity = SequenceMatcher(None, answer_lower, ideal_lower).ratio() * 100
+    
+    # 2. Palabras clave importantes (palabras comunes en respuestas correctas)
+    important_words = ["porque", "ya que", "debido a", "principalmente", "además", "también", 
+                      "ejemplo", "como", "cuando", "donde", "para", "mediante", "a través de"]
+    important_word_score = 0
+    for word in important_words:
+        if word in answer_lower:
+            important_word_score += 5
+    important_word_score = min(important_word_score, 30)
+    
+    # 3. Longitud de respuesta (respuestas muy cortas penalizan)
+    length_score = min(len(answer.split()) / 20 * 100, 100)
+    if len(answer.split()) < 5:
+        length_score = max(length_score, 20)  # mínimo 20% si es muy corto
+    
+    # 4. Coherencia con la pregunta (si responde algo relacionado)
+    question_keywords = set(re.findall(r'\b\w{4,}\b', question_lower))
+    answer_keywords = set(re.findall(r'\b\w{4,}\b', answer_lower))
+    if question_keywords:
+        keyword_overlap = len(answer_keywords.intersection(question_keywords)) / len(question_keywords) * 100
+    else:
+        keyword_overlap = 50
+    
+    # Combinar puntuaciones (pesos ajustables)
+    final_score = (
+        text_similarity * 0.4 +      # 40% similitud con respuesta ideal
+        length_score * 0.2 +          # 20% longitud
+        keyword_overlap * 0.25 +      # 25% palabras clave de la pregunta
+        important_word_score * 0.15   # 15% palabras importantes
+    )
+    
+    # Asegurar rango 0-100 y redondear
+    final_score = max(0, min(100, round(final_score)))
+    
+    # Feedback según el puntaje
+    if final_score >= 85:
+        feedback = "Excelente respuesta. Muy completa y precisa."
+    elif final_score >= 70:
+        feedback = "Buena respuesta. Tiene los conceptos principales, podría profundizar un poco más."
+    elif final_score >= 50:
+        feedback = "Respuesta aceptable, pero le faltan detalles importantes."
+    elif final_score >= 30:
+        feedback = "Respuesta limitada. Revisa el material para complementar."
+    else:
+        feedback = "Respuesta insuficiente. Te recomendamos repasar esta sección."
+    
+    return final_score, feedback
+
+def evaluate_answer_with_variation(text, question, ideal_answer, student_answer):
+    """Evalúa una respuesta pidiendo variación y con respaldo granular"""
+    
+    # Si la respuesta está vacía
+    if not student_answer or student_answer.strip() == "":
+        return 0, "No respondió a tiempo."
+    
+    # Prompt mejorado para forzar variación
+    prompt = f"""Eres un profesor experto evaluando respuestas de estudiantes.
+
+Texto de referencia:
+{text}
+
+Pregunta:
+{question}
+
+Respuesta ideal (modelo):
+{ideal_answer}
+
+Respuesta del estudiante:
+{student_answer}
+
+IMPORTANTE: Usa TODA la escala del 0 al 100. NO uses solo 0, 50 o 100.
+- 90-100: Excelente, muy completa y precisa
+- 75-89: Buena, con algunos detalles menores faltantes
+- 60-74: Aceptable, pero le faltan conceptos clave
+- 40-59: Limitada, varios errores o información incompleta
+- 20-39: Muy deficiente, apenas toca el tema
+- 0-19: Incorrecta o no responde la pregunta
+
+Responde SOLO en formato JSON exacto:
+{{"score": <número entre 0 y 100, usa decimales si es necesario>, "feedback": "<explicación breve del puntaje>"}}
+
+Ejemplos de puntuaciones válidas: 45, 62, 78, 83, 91, 37, 55, 68, 74, 88, 94
+"""
+    
+    try:
+        response = co.chat(
+            model="command-r-plus-08-2024",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"}
+        )
+        raw = response.message.content[0].text.strip()
+        raw = re.sub(r"```json|```", "", raw).strip()
+        result = json.loads(raw)
+        
+        score = float(result.get("score", 0))
+        feedback = result.get("feedback", "")
+        
+        # Verificar si la IA usó solo valores redondos (0, 50, 100)
+        if score in [0, 50, 100] and len(student_answer.split()) > 10:
+            # Forzar recalibración si la respuesta es larga pero la IA dio 0 o 50
+            backup_score, backup_feedback = calculate_backup_score(student_answer, ideal_answer, question)
+            # Promediar con el score de la IA para darle peso
+            score = round((score + backup_score) / 2)
+            feedback = f"{feedback} (Evaluación ajustada: {backup_feedback})"
+        
+        # Redondear a 1 decimal y asegurar rango
+        score = max(0, min(100, round(score, 1)))
+        
+        # Si el score es 0 pero la respuesta no está vacía, usar respaldo
+        if score == 0 and student_answer.strip():
+            backup_score, backup_feedback = calculate_backup_score(student_answer, ideal_answer, question)
+            if backup_score > 0:
+                score = backup_score
+                feedback = backup_feedback
+        
+        return score, feedback
+        
+    except Exception as e:
+        print(f"Error en evaluación IA: {e}")
+        # Usar sistema de respaldo
+        backup_score, backup_feedback = calculate_backup_score(student_answer, ideal_answer, question)
+        return backup_score, backup_feedback
 
 # ─── Rutas ────────────────────────────────────────────────────────────────
 @app.route("/")
@@ -295,30 +430,8 @@ def force_evaluate():
             feedback = "No respondió a tiempo."
             points = 0
         else:
-            prompt = f"""Texto de referencia:
-{text}
-
-Pregunta: {question}
-
-Respuesta ideal (modelo): {ideal_answer}
-
-Respuesta del estudiante: {answer}
-
-Evalúa la respuesta del 0 al 100 según qué tan correcta y completa es, comparándola con la respuesta ideal. Responde SOLO en este formato JSON exacto:
-{{ "score": <número 0-100>, "feedback": "<una oración explicando el puntaje>" }}"""
-            response = co.chat(
-                model="command-r-plus-08-2024",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"}
-            )
-            raw = response.message.content[0].text.strip()
-            try:
-                raw = re.sub(r"```json|```", "", raw).strip()
-                result = json.loads(raw)
-            except Exception:
-                result = {"score": 0, "feedback": "Error en evaluación."}
-            score = result.get("score", 0)
-            feedback = result.get("feedback", "")
+            # Usar la nueva función de evaluación con variación
+            score, feedback = evaluate_answer_with_variation(text, question, ideal_answer, answer)
             points = round(score / 100 * 3, 1)
 
         room["players"][player] = round(room["players"].get(player, 0) + points, 1)
@@ -398,31 +511,10 @@ def _evaluate_inner():
     results = {}
     any_wrong = False
     for player, answer in answers.items():
-        prompt = f"""Texto de referencia:
-{text}
-
-Pregunta: {question}
-
-Respuesta ideal (modelo): {ideal_answer}
-
-Respuesta del estudiante: {answer}
-
-Evalúa la respuesta del 0 al 100 según qué tan correcta y completa es, comparándola con la respuesta ideal. Responde SOLO en este formato JSON exacto:
-{{ "score": <número 0-100>, "feedback": "<una oración explicando el puntaje>" }}"""
-        response = co.chat(
-            model="command-r-plus-08-2024",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"}
-        )
-        raw = response.message.content[0].text.strip()
-        try:
-            raw = re.sub(r"```json|```", "", raw).strip()
-            result = json.loads(raw)
-        except Exception:
-            result = {"score": 0, "feedback": "No se pudo evaluar la respuesta."}
-        score = result.get("score", 0)
-        feedback = result.get("feedback", "")
+        # Usar la nueva función de evaluación con variación
+        score, feedback = evaluate_answer_with_variation(text, question, ideal_answer, answer)
         points = round(score / 100 * 3, 1)
+        
         room["players"][player] = round(room["players"].get(player, 0) + points, 1)
         results[player] = {
             "answer": answer,
