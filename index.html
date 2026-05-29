@@ -94,6 +94,12 @@
       <small id="weakest-hint" style="margin-top:8px"></small>
     </div>
     <div class="card">
+      <div class="card-title">Configuración de tiempo de respuesta</div>
+      <label style="display: block; margin-bottom: 6px;">Tiempo para responder (segundos):</label>
+      <input type="number" id="answer-time-input" min="300" step="30" value="300" style="width: 100%; padding: 8px; background: var(--surface2); border: 1px solid var(--border); border-radius: 6px; color: white;">
+      <small style="color: var(--muted);">Mínimo 300 segundos (5 minutos). Los jugadores tendrán este tiempo para responder.</small>
+    </div>
+    <div class="card">
       <div class="card-title">Historial de preguntas</div>
       <div id="history-list" style="max-height:300px; overflow-y:auto;"></div>
     </div>
@@ -126,7 +132,7 @@
     </div>
     <div class="card" id="waiting-others-card">
       <div class="card-title">Esperando respuestas</div>
-      <div id="answer-timer" style="font-size:24px; text-align:center; margin:10px 0;">01:00</div>
+      <div id="answer-timer" style="font-size:24px; text-align:center; margin:10px 0;">05:00</div>
       <div id="answered-bubbles" class="answered-row"></div>
       <div class="split">
           <button class="btn btn-primary" id="btn-evaluate" onclick="showResults()">Ver resultados →</button>
@@ -178,7 +184,7 @@ let answerTimerInterval = null;
 let myAnswered = false;
 let playerNames = [];
 let lastPhase = "";
-let currentAnswerTimeLeft = 60;  // segundos
+let currentAnswerTimeLeft = 300;  // segundos
 
 // ---------- VIEW ROUTER ----------
 function show(id) {
@@ -315,10 +321,11 @@ function calculateReadTime(text) {
 
 async function loadSection() {
   const index = parseInt(document.getElementById("section-select").value);
+  const answerTime = parseInt(document.getElementById("answer-time-input").value) || 300;
   const res = await fetch("/section", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ index, room })
+    body: JSON.stringify({ index, room, answer_time: answerTime })
   });
   const data = await res.json();
   if (data.error) { notif(data.error); return; }
@@ -340,7 +347,6 @@ function startTimer(seconds) {
     if (rem <= 0) {
       playBeep();
       clearInterval(timerInterval);
-      // No avanzamos automáticamente, solo suena
       return;
     }
     const m = Math.floor(rem / 60), s = rem % 60;
@@ -361,10 +367,9 @@ function startAnswerTimer(seconds) {
   function tick() {
     if (currentAnswerTimeLeft <= 0) {
       clearInterval(answerTimerInterval);
-      // Si no se ha enviado respuesta, enviar automáticamente (incluso vacía)
       if (!myAnswered) {
         notif("⏰ Tiempo agotado. Se enviará tu respuesta actual.", 3000);
-        submitMyAnswer(true); // auto-envío
+        submitMyAnswer(true);
       }
       return;
     }
@@ -380,13 +385,16 @@ function startAnswerTimer(seconds) {
 
 function extendAnswerTime() {
   if (!isHost) return;
-  currentAnswerTimeLeft += 30;
-  notif("➕ Tiempo extendido +30 segundos", 2000);
-  // También notificar al backend (opcional)
   fetch("/extend_time", {
     method: "POST",
     headers: {"Content-Type":"application/json"},
     body: JSON.stringify({ room })
+  }).then(async res => {
+    const data = await res.json();
+    if (data.ok) {
+      currentAnswerTimeLeft = data.new_time || (currentAnswerTimeLeft + 30);
+      notif(`➕ Tiempo extendido +30s (ahora ${Math.floor(currentAnswerTimeLeft/60)}:${String(currentAnswerTimeLeft%60).padStart(2,"0")})`, 3000);
+    }
   }).catch(e => console.warn);
 }
 
@@ -408,7 +416,6 @@ async function startQuestion() {
   btnEval.textContent = "Ver resultados →";
   document.getElementById("answer-player-label").textContent = myName;
   
-  // Mostrar botón de extender tiempo solo para host
   if (isHost) {
     document.getElementById("btn-extend-time").style.display = "inline-block";
     document.getElementById("btn-force-evaluate").style.display = "inline-block";
@@ -433,10 +440,9 @@ async function startQuestion() {
   }
   document.getElementById("question-text").textContent = data.question;
   
-  // Iniciar temporizador de respuesta: 60 segundos base
-  startAnswerTimer(60);
+  const answerTime = data.answer_time || 300;
+  startAnswerTimer(answerTime);
   
-  // Actualizar burbujas iniciales
   const pollRes = await fetch("/poll", {
     method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({ room })
@@ -511,7 +517,7 @@ async function showResults() {
   if (data.error) { notif(data.error); btn.disabled = false; btn.textContent = "Ver resultados →"; return; }
   renderResults(data);
   renderHistory();
-  clearInterval(answerTimerInterval); // detener timer de respuesta
+  clearInterval(answerTimerInterval);
 }
 
 function renderResults(data) {
@@ -600,9 +606,8 @@ async function doPoll() {
         show("v-read");
         document.getElementById("read-host-controls").style.display = "none";
         document.getElementById("read-player-msg").style.display = "block";
-        // Calcular tiempo de lectura en cliente también
         const sectionText = document.getElementById("section-content").textContent;
-        const contentOnly = sectionText.replace(/^\d+\s+[^\n]+\n\n/, ""); // extraer solo contenido
+        const contentOnly = sectionText.replace(/^\d+\s+[^\n]+\n\n/, "");
         const readTime = calculateReadTime(contentOnly);
         startTimer(readTime);
       }
@@ -617,7 +622,8 @@ async function doPoll() {
         document.getElementById("question-text").textContent = data.question || "Cargando…";
         show("v-question");
         clearInterval(timerInterval);
-        startAnswerTimer(60);
+        const answerTime = data.answer_time || 300;
+        startAnswerTimer(answerTime);
       }
       if (data.phase === "results" && lastPhase !== "results") {
         await fetchAndShowResults();

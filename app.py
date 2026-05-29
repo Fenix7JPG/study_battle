@@ -35,6 +35,7 @@ def new_room():
         "player_names": [],
         "connected": {},
         "last_results_cache": None,
+        "answer_time_seconds": 300,  # tiempo por defecto: 5 minutos
     }
 
 def get_room(code):
@@ -223,9 +224,10 @@ def upload():
             return jsonify({"error": f"Sección {i+1}: faltan 'title' o 'content'"}), 400
         if "number" not in s:
             s["number"] = str(i + 1)
-        # Valores por defecto para tipo de sección
+        # Valores por defecto
         s.setdefault("type", "theory")
         s.setdefault("ideal_answer", "")
+        s.setdefault("answer_time", None)  # si viene del JSON, se usará luego
     problems = validate_sections(sections)
     room["sections"] = sections
     room["current_section_index"] = 0
@@ -249,9 +251,21 @@ def get_section():
     if not room:
         return jsonify({"error": "Sala no encontrada"}), 404
     index = data.get("index", 0)
+    
+    # Configurar tiempo de respuesta: si el JSON tiene answer_time para esta sección, usarlo
+    section = room["sections"][index] if index < len(room["sections"]) else None
+    if section and section.get("answer_time") and isinstance(section["answer_time"], int) and section["answer_time"] >= 300:
+        room["answer_time_seconds"] = section["answer_time"]
+    else:
+        # Si el host envía un valor, usarlo (mínimo 300)
+        answer_time = data.get("answer_time")
+        if answer_time and isinstance(answer_time, int) and answer_time >= 300:
+            room["answer_time_seconds"] = answer_time
+        else:
+            room["answer_time_seconds"] = max(300, room.get("answer_time_seconds", 300))
+    
     if index >= len(room["sections"]):
         return jsonify({"error": "No hay más secciones"}), 400
-    section = room["sections"][index]
     room["current_section_index"] = index
     room["current_section_text"] = section["content"]
     room["answers"] = {}
@@ -261,6 +275,7 @@ def get_section():
         "title": section["title"],
         "content": section["content"],
         "type": section.get("type", "theory"),
+        "answer_time": room["answer_time_seconds"],
     })
 
 @app.route("/weakest", methods=["POST"])
@@ -298,9 +313,13 @@ def generate_question():
         room["current_ideal_answer"] = ideal_answer
         room["answers"] = {}
         room["phase"] = "answering"
-        return jsonify({"question": question, "ideal_answer": ideal_answer})
+        return jsonify({
+            "question": question,
+            "ideal_answer": ideal_answer,
+            "answer_time": room.get("answer_time_seconds", 300)
+        })
     
-    # Si es tipo "theory" (default), generar pregunta con IA
+    # Si es tipo "theory" (default), generar pregunta con IA evitando repeticiones
     if not text:
         label = f"'{current_section.get('number','')} {current_section.get('title','')}'"
         return jsonify({"error": f"La sección {label} no tiene texto legible."}), 400
@@ -308,10 +327,10 @@ def generate_question():
     past_qs = [h["question"] for h in room["question_history"] if h.get("section_index") == current_index]
     history_context = ""
     if past_qs:
-        history_context = "\n\nPreguntas ya hechas sobre esta sección (NO las repitas):\n" + "\n".join(f"- {q}" for q in past_qs)
+        history_context = "\n\nPreguntas ya hechas sobre esta sección (NO las repitas, genera una DIFERENTE y creativa):\n" + "\n".join(f"- {q}" for q in past_qs)
 
     prompt = f"""Lee el siguiente fragmento de texto y genera:
-1. Una pregunta de comprensión clara y directa.
+1. Una pregunta de comprensión clara y directa, que NO sea igual a ninguna de las preguntas anteriores.
 2. Una respuesta ideal (modelo) para esa pregunta.
 
 Devuelve SOLO un objeto JSON con dos campos: "question" y "ideal_answer".
@@ -339,7 +358,11 @@ Texto:
     room["current_ideal_answer"] = ideal_answer
     room["answers"] = {}
     room["phase"] = "answering"
-    return jsonify({"question": question, "ideal_answer": ideal_answer})
+    return jsonify({
+        "question": question,
+        "ideal_answer": ideal_answer,
+        "answer_time": room.get("answer_time_seconds", 300)
+    })
 
 @app.route("/answer", methods=["POST"])
 def submit_answer():
@@ -377,6 +400,7 @@ def poll():
         "player_names": room["player_names"],
         "question": room.get("current_question", ""),
         "ideal_answer": room.get("current_ideal_answer", ""),
+        "answer_time": room.get("answer_time_seconds", 300) if room["phase"] == "answering" else None,
     })
 
 @app.route("/extend_time", methods=["POST"])
@@ -388,7 +412,9 @@ def extend_time():
         return jsonify({"error": "Sala no encontrada"}), 404
     if room["phase"] != "answering":
         return jsonify({"error": "Solo se puede extender el tiempo durante la fase de respuesta"}), 400
-    return jsonify({"ok": True, "extra_seconds": 30})
+    # Extender 30 segundos adicionales
+    room["answer_time_seconds"] = room.get("answer_time_seconds", 300) + 30
+    return jsonify({"ok": True, "extra_seconds": 30, "new_time": room["answer_time_seconds"]})
 
 @app.route("/evaluate", methods=["POST"])
 def evaluate():
